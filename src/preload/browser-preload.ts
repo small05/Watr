@@ -15,7 +15,7 @@
  * 修复方案：探针内部直接使用 ipcRenderer.send()。
  */
 
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webFrame } from 'electron'
 
 // ---- 暴露安全的 IPC Bridge 到页面主世界（保留，供未来扩展使用） ----
 contextBridge.exposeInMainWorld('__watrBridge', {
@@ -43,6 +43,137 @@ function sendChallengeResolved(data: { url: string; title: string }): void {
   ipcRenderer.send('probe:challenge-resolved', data)
 }
 
+// ---- 主世界隐身补丁注入（解决动态 iframe 的 HEADCHR_IFRAME 检测） ----
+function injectMainWorldStealth(): void {
+  try {
+    webFrame.executeJavaScript(`
+      (function () {
+        if (window.__watr_stealth_applied) return;
+        window.__watr_stealth_applied = true;
+
+        // 1. 原生 toString 伪装
+        const nativeToString = Function.prototype.toString;
+        const fnMap = new WeakMap();
+        const markNative = (fn, name) => {
+          fnMap.set(fn, name || fn.name || '');
+          return fn;
+        };
+
+        try {
+          const toStringProxy = new Proxy(nativeToString, {
+            apply(target, thisArg, argArray) {
+              if (fnMap.has(thisArg)) {
+                const name = fnMap.get(thisArg);
+                return 'function ' + (name ? name + '() ' : '') + '{ [native code] }';
+              }
+              return Reflect.apply(target, thisArg, argArray);
+            }
+          });
+          Function.prototype.toString = toStringProxy;
+          markNative(toStringProxy, 'toString');
+        } catch (e) {}
+
+        // 2. 补齐 window.chrome 对象
+        if (!window.chrome) {
+          const chromeObj = {
+            runtime: {
+              connect: markNative(function connect() { return {}; }, 'connect'),
+              sendMessage: markNative(function sendMessage() {}, 'sendMessage'),
+              id: undefined
+            },
+            loadTimes: markNative(function loadTimes() { return {}; }, 'loadTimes'),
+            csi: markNative(function csi() { return {}; }, 'csi'),
+            app: {
+              isInstalled: false,
+              InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+              RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
+            }
+          };
+
+          Object.defineProperty(window, 'chrome', {
+            value: chromeObj,
+            writable: false,
+            configurable: false,
+            enumerable: true
+          });
+        }
+
+        // 3. 修复 iframe.contentWindow / contentDocument 的 chrome 穿透（消除 HEADCHR_IFRAME FAIL）
+        try {
+          const originalContentWindow = Object.getOwnPropertyDescriptor(
+            HTMLIFrameElement.prototype,
+            'contentWindow'
+          );
+
+          if (originalContentWindow && originalContentWindow.get) {
+            const origGet = originalContentWindow.get;
+            const contentWindowGetter = function contentWindow() {
+              const win = origGet.call(this);
+              if (win) {
+                try {
+                  if (!win.chrome) {
+                    Object.defineProperty(win, 'chrome', {
+                      value: window.chrome,
+                      writable: false,
+                      configurable: false,
+                      enumerable: true
+                    });
+                  }
+                } catch (e) {}
+              }
+              return win;
+            };
+            markNative(contentWindowGetter, 'get contentWindow');
+
+            Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+              get: contentWindowGetter,
+              set: originalContentWindow.set,
+              configurable: true,
+              enumerable: true
+            });
+          }
+
+          const originalContentDocument = Object.getOwnPropertyDescriptor(
+            HTMLIFrameElement.prototype,
+            'contentDocument'
+          );
+
+          if (originalContentDocument && originalContentDocument.get) {
+            const origDocGet = originalContentDocument.get;
+            const contentDocumentGetter = function contentDocument() {
+              const doc = origDocGet.call(this);
+              if (doc && doc.defaultView) {
+                try {
+                  if (!doc.defaultView.chrome) {
+                    Object.defineProperty(doc.defaultView, 'chrome', {
+                      value: window.chrome,
+                      writable: false,
+                      configurable: false,
+                      enumerable: true
+                    });
+                  }
+                } catch (e) {}
+              }
+              return doc;
+            };
+            markNative(contentDocumentGetter, 'get contentDocument');
+
+            Object.defineProperty(HTMLIFrameElement.prototype, 'contentDocument', {
+              get: contentDocumentGetter,
+              set: originalContentDocument.set,
+              configurable: true,
+              enumerable: true
+            });
+          }
+        } catch (e) {}
+      })();
+    `).catch(() => {});
+  } catch (e) {}
+}
+
+// 立即在主世界注入隐身补丁
+injectMainWorldStealth();
+
 // ---- 在页面加载后注入隔离上下文探针 ----
 window.addEventListener('DOMContentLoaded', () => {
   injectProbe()
@@ -52,51 +183,8 @@ window.addEventListener('DOMContentLoaded', () => {
  * 注入探针脚本到 Isolated World
  */
 function injectProbe(): void {
-  // ---- Stealth Patches ----
-  try {
-    if (!(window as any).chrome) {
-      const chromeObj = {
-        runtime: {
-          connect: function () { return {} },
-          sendMessage: function () {},
-          id: undefined
-        },
-        loadTimes: function () { return {} },
-        csi: function () { return {} }
-      }
-
-      const nativeFnProxy = (target: any): any => {
-        return new Proxy(target, {
-          get(obj, prop) {
-            if (prop === 'toString') {
-              return function () {
-                return 'function ' + (obj.name || '') + '() { [native code] }'
-              }
-            }
-            return obj[prop]
-          }
-        })
-      }
-
-      if (chromeObj.runtime.connect) {
-        chromeObj.runtime.connect = nativeFnProxy(chromeObj.runtime.connect)
-      }
-      if (chromeObj.runtime.sendMessage) {
-        chromeObj.runtime.sendMessage = nativeFnProxy(chromeObj.runtime.sendMessage)
-      }
-      chromeObj.loadTimes = nativeFnProxy(chromeObj.loadTimes)
-      chromeObj.csi = nativeFnProxy(chromeObj.csi)
-
-      Object.defineProperty(window, 'chrome', {
-        value: chromeObj,
-        writable: false,
-        configurable: false,
-        enumerable: true
-      })
-    }
-  } catch {
-    // 静默失败
-  }
+  // 确保主世界补丁生效
+  injectMainWorldStealth();
 
   setupEventCapture()
   setupMutationObserver()
