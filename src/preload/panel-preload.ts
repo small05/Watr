@@ -1,7 +1,10 @@
 /**
- * 控制面板 Preload 脚本
+ * 控制面板 Preload 脚本 v1.1
  *
- * 为右侧 Vue 3 控制面板暴露安全的 IPC 通信接口
+ * 【v1.1 新增】
+ * - 步骤管理 API（删除/交换/插入）
+ * - 隐私模式 + 清除 Cookies
+ * - onStepsUpdated 事件监听
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
@@ -9,83 +12,94 @@ import { contextBridge, ipcRenderer } from 'electron'
 contextBridge.exposeInMainWorld('watrApi', {
   // ==================== 录制控制 ====================
 
-  /** 开始录制 */
   startRecording: (url: string) =>
     ipcRenderer.invoke('recording:start', url),
-
-  /** 暂停录制 */
   pauseRecording: () =>
     ipcRenderer.invoke('recording:pause'),
-
-  /** 恢复录制 */
   resumeRecording: () =>
     ipcRenderer.invoke('recording:resume'),
-
-  /** 停止并保存 */
   stopRecording: () =>
     ipcRenderer.invoke('recording:stop'),
-
-  /** 重置废弃 */
   resetRecording: () =>
     ipcRenderer.invoke('recording:reset'),
-
-  /** 获取当前录制状态 */
   getRecordingState: () =>
     ipcRenderer.invoke('recording:get-state'),
 
+  // ==================== 步骤管理（v1.1 新增） ====================
+
+  /** 删除指定步骤 */
+  deleteStep: (stepIndex: number) =>
+    ipcRenderer.invoke('step:delete', stepIndex),
+
+  /** 交换两个步骤的顺序 */
+  swapSteps: (indexA: number, indexB: number) =>
+    ipcRenderer.invoke('step:swap', indexA, indexB),
+
+  /** 从指定步骤后插入录制 */
+  insertAfterStep: (stepIndex: number) =>
+    ipcRenderer.invoke('step:insert-after', stepIndex),
+
   // ==================== 用户注记 ====================
 
-  /** 更新步骤注记 */
   updateStepNotes: (stepIndex: number, notes: string) =>
     ipcRenderer.invoke('recording:update-notes', stepIndex, notes),
 
   // ==================== 导出 ====================
 
-  /** 复制为 AI Markdown 上下文 */
   copyAsMarkdown: () =>
     ipcRenderer.invoke('export:copy-markdown'),
-
-  /** 打开输出目录 */
   openOutputDirectory: () =>
     ipcRenderer.invoke('export:open-directory'),
 
   // ==================== 配置 ====================
 
-  /** 设置自定义输出目录 */
   setOutputDir: (dir: string) =>
     ipcRenderer.invoke('config:set-output-dir', dir),
-
-  /** 获取当前输出目录 */
   getOutputDir: () =>
     ipcRenderer.invoke('config:get-output-dir'),
 
   // ==================== 浏览器导航 ====================
 
-  /** 导航到 URL */
   navigate: (url: string) =>
     ipcRenderer.invoke('browser:navigate', url),
-
-  /** 获取当前 URL */
   getCurrentUrl: () =>
     ipcRenderer.invoke('browser:get-url'),
 
+  // ==================== 隐私模式（v1.1 新增） ====================
+
+  /** 启用隐私模式 */
+  enablePrivacy: () =>
+    ipcRenderer.invoke('privacy:enable'),
+
+  /** 禁用隐私模式 */
+  disablePrivacy: () =>
+    ipcRenderer.invoke('privacy:disable'),
+
+  /** 清除 Cookies 和存储数据 */
+  clearSessionData: () =>
+    ipcRenderer.invoke('privacy:clear-data'),
+
   // ==================== 事件监听 ====================
 
-  /** 监听录制状态变更 */
   onStateChanged: (callback: (state: string) => void) => {
     ipcRenderer.on('recording:state-changed', (_event, state) => {
       callback(state)
     })
   },
 
-  /** 监听新步骤添加 */
   onStepAdded: (callback: (step: unknown) => void) => {
     ipcRenderer.on('recording:step-added', (_event, step) => {
       callback(step)
     })
   },
 
-  /** 监听错误 */
+  /** 【v1.1 新增】步骤列表整体更新（删除/排序/插入后触发） */
+  onStepsUpdated: (callback: (steps: unknown[]) => void) => {
+    ipcRenderer.on('recording:steps-updated', (_event, steps) => {
+      callback(steps)
+    })
+  },
+
   onError: (callback: (message: string) => void) => {
     ipcRenderer.on('recording:error', (_event, message) => {
       callback(message)

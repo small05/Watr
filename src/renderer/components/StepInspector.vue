@@ -4,6 +4,7 @@ import type { StepData } from '../env'
 
 const props = defineProps<{
   step: StepData
+  recordingState: string
 }>()
 
 const emit = defineEmits<{
@@ -14,7 +15,6 @@ const emit = defineEmits<{
 const userNotes = ref(props.step.userNotes || '')
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 
-// 监听 step 切换时重置 notes
 watch(
   () => props.step.stepIndex,
   () => {
@@ -22,7 +22,6 @@ watch(
   }
 )
 
-// 自动保存（失去焦点或防抖 1s）
 function handleNotesInput() {
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
@@ -36,19 +35,19 @@ function handleNotesBlur() {
 }
 
 async function saveNotes() {
-  await window.watrApi.updateStepNotes(
-    props.step.stepIndex,
-    userNotes.value
-  )
+  await window.watrApi.updateStepNotes(props.step.stepIndex, userNotes.value)
 }
 
 // 选择器复制
 async function copySelector(text: string) {
   try {
     await navigator.clipboard.writeText(text)
-  } catch {
-    // fallback
-  }
+  } catch { /* fallback */ }
+}
+
+// ---- v1.1 新增：从此步骤后插入录制 ----
+async function handleInsertAfter() {
+  await window.watrApi.insertAfterStep(props.step.stepIndex)
 }
 </script>
 
@@ -58,12 +57,23 @@ async function copySelector(text: string) {
       <h3 class="inspector__title">
         步骤 {{ String(step.stepIndex).padStart(3, '0') }} 详情
       </h3>
-      <button class="btn" @click="emit('close')" style="padding: 4px 8px;">✕</button>
+      <div class="inspector__header-actions">
+        <!-- 从此步骤后插入录制 -->
+        <button
+          v-if="recordingState === 'paused' || recordingState === 'idle'"
+          class="btn btn--sm"
+          @click="handleInsertAfter"
+          title="从此步骤后恢复录制，新步骤将插入到此位置之后"
+        >
+          ⊕ 从此处插入
+        </button>
+        <button class="btn" @click="emit('close')" style="padding: 4px 8px;">✕</button>
+      </div>
     </div>
 
     <!-- 选择器信息 -->
     <div class="inspector__section" v-if="step.targetElement">
-      <div class="inspector__label">选择器</div>
+      <div class="inspector__label">选择器（点击复制）</div>
       <div class="selector-list">
         <div class="selector-item" @click="copySelector(step.targetElement!.playwrightSelector)">
           <span class="selector-item__key">Playwright</span>
@@ -95,9 +105,7 @@ async function copySelector(text: string) {
 
     <!-- 人工补充说明编辑区 -->
     <div class="inspector__section">
-      <div class="inspector__label">
-        ✏️ 人工特殊补充说明
-      </div>
+      <div class="inspector__label">✏️ 人工特殊补充说明</div>
       <textarea
         v-model="userNotes"
         class="textarea"
@@ -129,6 +137,12 @@ async function copySelector(text: string) {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.inspector__header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
 }
 
 .inspector__section {
@@ -191,5 +205,10 @@ async function copySelector(text: string) {
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--text-muted);
+}
+
+.btn--sm {
+  padding: 4px 10px;
+  font-size: 11px;
 }
 </style>

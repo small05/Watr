@@ -15,35 +15,45 @@ let timerInterval: ReturnType<typeof setInterval> | null = null
 
 // ---- 生命周期 ----
 onMounted(() => {
-  // 监听主进程推送的状态变更
   window.watrApi.onStateChanged((state: string) => {
     recordingState.value = state
-
     if (state === 'recording') {
       startTimer()
     } else {
       stopTimer()
     }
+    // 【v1.1】录制停止/废弃时清空选中
+    if (state === 'idle') {
+      selectedStep.value = null
+    }
   })
 
-  // 监听新步骤添加
   window.watrApi.onStepAdded((step: StepData) => {
     steps.value.push(step)
   })
 
-  // 监听错误
+  // 【v1.1 新增】步骤列表整体更新（删除/排序后触发）
+  window.watrApi.onStepsUpdated((updatedSteps: StepData[]) => {
+    steps.value = updatedSteps
+    // 如果当前选中的步骤被删除，清空选中
+    if (selectedStep.value) {
+      const exists = updatedSteps.find(s => s.stepIndex === selectedStep.value!.stepIndex)
+      if (!exists) {
+        selectedStep.value = null
+      }
+    }
+  })
+
   window.watrApi.onError((message: string) => {
     console.error('[Watr Error]', message)
   })
 
-  // 初始化状态
   window.watrApi.getRecordingState().then((data) => {
     recordingState.value = data.state
     steps.value = data.steps
   })
 })
 
-// ---- 计时器 ----
 function startTimer() {
   elapsedTime.value = 0
   timerInterval = setInterval(() => {
@@ -58,7 +68,6 @@ function stopTimer() {
   }
 }
 
-// ---- 事件处理 ----
 function handleStepSelect(step: StepData) {
   selectedStep.value = step
 }
@@ -84,6 +93,7 @@ function handleStepDeselect() {
       <StepTimeline
         :steps="steps"
         :selected-index="selectedStep?.stepIndex ?? -1"
+        :recording-state="recordingState"
         @select="handleStepSelect"
       />
     </div>
@@ -92,6 +102,7 @@ function handleStepDeselect() {
     <StepInspector
       v-if="selectedStep"
       :step="selectedStep"
+      :recording-state="recordingState"
       @close="handleStepDeselect"
     />
 

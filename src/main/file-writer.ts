@@ -1,19 +1,3 @@
-/**
- * 文件系统持久化引擎
- *
- * 职责：
- * - 创建会话目录 record_session_YYYYMMDD_HHMMSS/
- * - 按步骤序列创建 step_XXX_actionType/ 子目录
- * - 异步写入 action.json, description.txt, page_snapshot.mhtml,
- *   page_dom.cleaned.html, screenshot.png
- * - 管理 session_meta.json 全局元数据
- *
- * 路径策略：
- * - 默认基准路径：app.getPath('documents')/Watr/
- * - 严禁使用相对路径写入程序工作目录
- * - 支持 UI 自定义落盘目录
- */
-
 import { app } from 'electron'
 import { promises as fs } from 'fs'
 import { join } from 'path'
@@ -317,6 +301,92 @@ export class FileWriter {
   /** 获取已记录步数 */
   getStepCount(): number {
     return this.stepCount
+  }
+
+  /**
+   * 【v1.1 新增】删除整个会话目录（废弃录制时调用）
+   */
+  async deleteSessionDir(): Promise<void> {
+    if (this.sessionDir) {
+      try {
+        await fs.rm(this.sessionDir, { recursive: true, force: true })
+      } catch {
+        // 目录不存在或删除失败，静默跳过
+      }
+      this.sessionDir = ''
+      this.stepCount = 0
+    }
+  }
+
+  /**
+   * 【v1.1 新增】删除指定步骤目录
+   */
+  async deleteStep(stepIndex: number): Promise<void> {
+    const stepDir = await this.findStepDir(stepIndex)
+    if (stepDir) {
+      try {
+        await fs.rm(stepDir, { recursive: true, force: true })
+      } catch {
+        // 静默
+      }
+    }
+  }
+
+  /**
+   * 【v1.1 新增】根据内存中的步骤列表重建磁盘目录编号
+   * 清除所有 step_XXX 目录，按新顺序重写
+   */
+  async renumberSteps(steps: StepData[]): Promise<void> {
+    if (!this.sessionDir) return
+
+    try {
+      // 读取当前所有 step 目录
+      const entries = await fs.readdir(this.sessionDir)
+      const stepDirs = entries.filter(e => e.startsWith('step_')).sort()
+
+      // 临时重命名防止冲突（加 __tmp 后缀）
+      for (const dir of stepDirs) {
+        const src = join(this.sessionDir, dir)
+        const dst = join(this.sessionDir, dir + '__tmp')
+        try {
+          await fs.rename(src, dst)
+        } catch { /* skip */ }
+      }
+
+      // 按新顺序重命名
+      const tmpEntries = await fs.readdir(this.sessionDir)
+      const tmpDirs = tmpEntries.filter(e => e.endsWith('__tmp')).sort()
+
+      for (let i = 0; i < steps.length && i < tmpDirs.length; i++) {
+        const src = join(this.sessionDir, tmpDirs[i])
+        const newIndex = String(i).padStart(3, '0')
+        const actionType = this.sanitizeDirName(steps[i].actionType)
+        const dst = join(this.sessionDir, `step_${newIndex}_${actionType}`)
+        try {
+          await fs.rename(src, dst)
+          // 更新 action.json 中的 stepIndex
+          const actionPath = join(dst, 'action.json')
+          const raw = await fs.readFile(actionPath, 'utf-8')
+          const action = JSON.parse(raw)
+          action.stepIndex = i
+          await fs.writeFile(actionPath, JSON.stringify(action, null, 2), 'utf-8')
+        } catch { /* skip */ }
+      }
+
+      // 清理多余的临时目录
+      const remaining = await fs.readdir(this.sessionDir)
+      for (const entry of remaining) {
+        if (entry.endsWith('__tmp')) {
+          try {
+            await fs.rm(join(this.sessionDir, entry), { recursive: true, force: true })
+          } catch { /* skip */ }
+        }
+      }
+
+      this.stepCount = steps.length
+    } catch {
+      // 重编号失败不影响主流程
+    }
   }
 
   /** 时间戳格式化 YYYYMMDD_HHMMSS */

@@ -19,7 +19,8 @@ export default defineConfig({
       rollupOptions: {
         input: {
           'browser-preload': resolve(__dirname, 'src/preload/browser-preload.ts'),
-          'panel-preload': resolve(__dirname, 'src/preload/panel-preload.ts')
+          'panel-preload': resolve(__dirname, 'src/preload/panel-preload.ts'),
+          'navbar-preload': resolve(__dirname, 'src/preload/navbar-preload.ts')
         }
       }
     }
@@ -30,7 +31,8 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: {
-          index: resolve(__dirname, 'src/renderer/index.html')
+          index: resolve(__dirname, 'src/renderer/index.html'),
+          navbar: resolve(__dirname, 'src/renderer/navbar.html')
         }
       }
     }
