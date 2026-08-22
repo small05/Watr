@@ -1,12 +1,11 @@
 /**
- * 录制引擎 - 核心状态机与步骤管理
+ * 录制引擎 - 核心状态机与步骤管理 v1.2
  *
- * 状态流转：idle → recording → paused → saving → idle
- *
- * 【v1.1 修复与增强】
- * - 修复初始步骤截错页面：等待 did-finish-load 后再抓取
- * - 废弃时删除会话目录和 UI 步骤
- * - 步骤删除/插入/排序功能
+ * 【v1.2 增强】
+ * - 轻量录制模式（默认）：不挂载 CDP，使用原生截图
+ * - 深度录制模式：按需 CDP 快照
+ * - 便携化录制目录
+ * - 只录制活动标签页
  */
 
 import { WebContents } from 'electron'
@@ -16,6 +15,7 @@ import { cleanDom } from './dom-cleaner'
 import { getCurrentChromeUA } from './anti-fingerprint'
 
 export type RecordingState = 'idle' | 'recording' | 'paused' | 'saving'
+export type RecordingMode = 'lite' | 'deep'
 
 export interface ProbeEvent {
   actionType: string
@@ -44,11 +44,12 @@ export class RecordingEngine {
   private initialUrl: string = ''
   private callbacks: RecordingCallbacks = {}
   private steps: StepData[] = []
-  /** 插入模式：从指定步骤后插入新步骤 */
   private insertAfterIndex: number = -1
+  /** 【v1.2】录制模式：默认轻量模式 */
+  private recordingMode: RecordingMode = 'lite'
 
-  constructor() {
-    this.fileWriter = new FileWriter()
+  constructor(portableRoot?: string) {
+    this.fileWriter = new FileWriter(portableRoot)
   }
 
   bindWebContents(wc: WebContents): void {
@@ -76,12 +77,17 @@ export class RecordingEngine {
     this.fileWriter.setBaseDir(dir)
   }
 
+  /** 【v1.2】获取/设置录制模式 */
+  getRecordingMode(): RecordingMode {
+    return this.recordingMode
+  }
+
+  setRecordingMode(mode: RecordingMode): void {
+    this.recordingMode = mode
+  }
+
   // ==================== 状态控制 ====================
 
-  /**
-   * 开始录制
-   * 【v1.1】初始导航步骤改为等待页面加载完成后再抓取
-   */
   async start(url?: string): Promise<void> {
     if (this.state !== 'idle') return
 
@@ -106,11 +112,8 @@ export class RecordingEngine {
     }
     await this.fileWriter.writeSessionMeta(meta)
 
-    // 如果提供了 URL，等待页面加载完成后再录制初始步骤
     if (url && this.webContents) {
-      // 注册一次性 did-finish-load 监听器
       this.webContents.once('did-finish-load', async () => {
-        // 页面已完全加载，现在抓取的内容是正确的目标页面
         if (this.state === 'recording') {
           await this.recordNavigationStep(
             this.webContents!.getURL(),
@@ -130,13 +133,10 @@ export class RecordingEngine {
   resume(): void {
     if (this.state === 'paused') {
       this.setState('recording')
-      this.insertAfterIndex = -1 // 退出插入模式
+      this.insertAfterIndex = -1
     }
   }
 
-  /**
-   * 从指定步骤后恢复录制（插入模式）
-   */
   resumeFromStep(stepIndex: number): void {
     if (this.state !== 'paused' && this.state !== 'idle') return
     this.insertAfterIndex = stepIndex
@@ -161,79 +161,48 @@ export class RecordingEngine {
     return sessionDir
   }
 
-  /**
-   * 重置废弃当前录制
-   * 【v1.1】增加文件删除 + 清空 UI 步骤
-   */
   async reset(): Promise<void> {
     const sessionDir = this.fileWriter.getSessionDir()
-
-    // 删除会话目录
     if (sessionDir) {
       await this.fileWriter.deleteSessionDir()
     }
-
-    // 清空内部状态
     this.setState('idle')
     this.stepIndex = 0
     this.steps = []
     this.insertAfterIndex = -1
-
-    // 通知 UI 步骤已全部清空
     this.callbacks.onStepsUpdated?.([])
   }
 
   // ==================== 步骤管理 ====================
 
-  /**
-   * 删除指定步骤
-   */
   async deleteStep(targetStepIndex: number): Promise<void> {
-    // 从内存中移除
     this.steps = this.steps.filter(s => s.stepIndex !== targetStepIndex)
-
-    // 重新编号
-    this.steps.forEach((s, i) => {
-      s.stepIndex = i
-    })
+    this.steps.forEach((s, i) => { s.stepIndex = i })
     this.stepIndex = this.steps.length
-
-    // 在磁盘上删除并重建
     await this.fileWriter.deleteStep(targetStepIndex)
     await this.fileWriter.renumberSteps(this.steps)
-
-    // 通知 UI
     this.callbacks.onStepsUpdated?.(this.getSteps())
   }
 
-  /**
-   * 交换两个步骤的顺序
-   */
   async swapSteps(indexA: number, indexB: number): Promise<void> {
     if (indexA < 0 || indexB < 0 || indexA >= this.steps.length || indexB >= this.steps.length) return
-
-    // 交换内存中的步骤
     const temp = this.steps[indexA]
     this.steps[indexA] = this.steps[indexB]
     this.steps[indexB] = temp
-
-    // 重新编号
-    this.steps.forEach((s, i) => {
-      s.stepIndex = i
-    })
-
-    // 在磁盘上重建
+    this.steps.forEach((s, i) => { s.stepIndex = i })
     await this.fileWriter.renumberSteps(this.steps)
-
-    // 通知 UI
     this.callbacks.onStepsUpdated?.(this.getSteps())
   }
 
   // ==================== 步骤录制 ====================
 
+  /**
+   * 处理探针事件
+   * 【v1.2】根据 recordingMode 决定是否调用 CDP
+   */
   async handleProbeEvent(event: ProbeEvent): Promise<void> {
     if (this.state !== 'recording') return
-    if (!this.webContents || !this.cdpManager) return
+    if (!this.webContents) return
 
     try {
       const isChallenge = this.detectChallengePage(event.pageTitle, event.pageUrl)
@@ -253,10 +222,15 @@ export class RecordingEngine {
         inputValue: event.inputValue
       }
 
-      // 并行执行快照（增加错误容忍）
+      // 【v1.2 轻量模式】根据录制模式决定是否调用 CDP
+      const useCdp = this.recordingMode === 'deep' && this.cdpManager != null
+
       const [mhtml, screenshot, rawHtml] = await Promise.all([
-        this.cdpManager.captureMHTML().catch(() => null),
-        this.cdpManager.captureScreenshotNative().catch(() => Buffer.alloc(0)),
+        // MHTML：仅深度模式下生成
+        useCdp ? this.cdpManager!.captureMHTML().catch(() => null) : Promise.resolve(null),
+        // 截图：始终使用原生方式（不触发风控）
+        this.webContents!.capturePage().then(img => img.toPNG()).catch(() => Buffer.alloc(0)),
+        // DOM：始终通过 JS 获取
         this.webContents!.executeJavaScript(
           'document.documentElement.outerHTML'
         ).catch(() => '')
@@ -266,10 +240,8 @@ export class RecordingEngine {
 
       await this.fileWriter.writeStep(stepData, mhtml, cleanedHtml, screenshot)
 
-      // 如果在插入模式，将新步骤插入到指定位置
       if (this.insertAfterIndex >= 0) {
         this.steps.splice(this.insertAfterIndex + 1, 0, stepData)
-        // 重新编号所有步骤
         this.steps.forEach((s, i) => { s.stepIndex = i })
         this.insertAfterIndex++
         this.stepIndex = this.steps.length
@@ -286,9 +258,48 @@ export class RecordingEngine {
   }
 
   /**
-   * 录制导航步骤
-   * 【v1.1】使用实际的当前 URL 和 Title（从 webContents 获取）
+   * 【v1.2 新增】手动触发一次深度快照（仅当前步骤）
+   * 无论当前录制模式如何，都执行一次 CDP 快照
    */
+  async captureDeepSnapshot(): Promise<void> {
+    if (this.state !== 'recording' || !this.webContents || !this.cdpManager) return
+
+    try {
+      const url = this.webContents.getURL()
+      const title = this.webContents.getTitle()
+
+      const stepData: StepData = {
+        stepIndex: this.stepIndex,
+        actionType: 'deep_snapshot',
+        timestamp: new Date().toISOString(),
+        pageUrl: url,
+        pageTitle: title,
+        isChallengePage: false,
+        description: `手动深度快照: ${url}`,
+        userNotes: '',
+        targetElement: null,
+        inputValue: null
+      }
+
+      const [mhtml, screenshot, rawHtml] = await Promise.all([
+        this.cdpManager.captureMHTML().catch(() => null),
+        this.webContents.capturePage().then(img => img.toPNG()).catch(() => Buffer.alloc(0)),
+        this.webContents.executeJavaScript(
+          'document.documentElement.outerHTML'
+        ).catch(() => '')
+      ])
+
+      const cleanedHtml = cleanDom(rawHtml)
+      await this.fileWriter.writeStep(stepData, mhtml, cleanedHtml, screenshot)
+
+      this.steps.push(stepData)
+      this.stepIndex++
+      this.callbacks.onStepAdded?.(stepData)
+    } catch (error) {
+      this.callbacks.onError?.(error as Error)
+    }
+  }
+
   async recordNavigationStep(url: string, actionType: string = 'navigate'): Promise<void> {
     const actualUrl = this.webContents?.getURL() || url
     const actualTitle = this.webContents?.getTitle() || ''

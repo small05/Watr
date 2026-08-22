@@ -159,6 +159,12 @@ html, body {
   color: #fff;
 }
 
+.btn--warning {
+  background: var(--warning);
+  border-color: var(--warning);
+  color: #fff;
+}
+
 .btn--danger {
   background: transparent;
   border-color: var(--danger);
@@ -168,6 +174,18 @@ html, body {
 .btn--danger:hover {
   background: var(--danger);
   color: #fff;
+}
+
+.btn--sm {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.btn--icon {
+  padding: 4px 8px;
+  min-width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
 }
 
 .btn:disabled {

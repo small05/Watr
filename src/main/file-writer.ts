@@ -44,9 +44,18 @@ export class FileWriter {
   private baseDir: string
   private stepCount: number = 0
 
-  constructor(customBaseDir?: string) {
-    // 默认存储在 Documents/Watr/
-    this.baseDir = customBaseDir || join(app.getPath('documents'), 'Watr')
+  constructor(portableRoot?: string) {
+    // 【v1.2 便携化】录制数据保存在程序本体目录 recordings/
+    if (portableRoot) {
+      this.baseDir = join(portableRoot, 'recordings')
+    } else {
+      // 兼容旧逻辑：如果未指定则使用 exe 目录或开发环境项目根
+      const { app: electronApp } = require('electron')
+      const root = electronApp.isPackaged
+        ? require('path').dirname(electronApp.getPath('exe'))
+        : require('path').resolve(__dirname, '../..')
+      this.baseDir = join(root, 'recordings')
+    }
   }
 
   /** 更新存储基准目录 */

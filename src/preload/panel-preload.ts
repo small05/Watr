@@ -1,10 +1,9 @@
 /**
- * 控制面板 Preload 脚本 v1.1
+ * 控制面板 Preload 脚本 v1.2
  *
- * 【v1.1 新增】
- * - 步骤管理 API（删除/交换/插入）
- * - 隐私模式 + 清除 Cookies
- * - onStepsUpdated 事件监听
+ * 【v1.2 新增】
+ * - 录制模式切换 + 深度快照
+ * - Profile 管理 API
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
@@ -25,17 +24,21 @@ contextBridge.exposeInMainWorld('watrApi', {
   getRecordingState: () =>
     ipcRenderer.invoke('recording:get-state'),
 
-  // ==================== 步骤管理（v1.1 新增） ====================
+  // ==================== 录制模式（v1.2 新增） ====================
 
-  /** 删除指定步骤 */
+  setRecordingMode: (mode: 'lite' | 'deep') =>
+    ipcRenderer.invoke('recording:set-mode', mode),
+  getRecordingMode: () =>
+    ipcRenderer.invoke('recording:get-mode'),
+  captureDeepSnapshot: () =>
+    ipcRenderer.invoke('recording:deep-snapshot'),
+
+  // ==================== 步骤管理 ====================
+
   deleteStep: (stepIndex: number) =>
     ipcRenderer.invoke('step:delete', stepIndex),
-
-  /** 交换两个步骤的顺序 */
   swapSteps: (indexA: number, indexB: number) =>
     ipcRenderer.invoke('step:swap', indexA, indexB),
-
-  /** 从指定步骤后插入录制 */
   insertAfterStep: (stepIndex: number) =>
     ipcRenderer.invoke('step:insert-after', stepIndex),
 
@@ -65,19 +68,31 @@ contextBridge.exposeInMainWorld('watrApi', {
   getCurrentUrl: () =>
     ipcRenderer.invoke('browser:get-url'),
 
-  // ==================== 隐私模式（v1.1 新增） ====================
+  // ==================== 隐私模式 ====================
 
-  /** 启用隐私模式 */
   enablePrivacy: () =>
     ipcRenderer.invoke('privacy:enable'),
-
-  /** 禁用隐私模式 */
   disablePrivacy: () =>
     ipcRenderer.invoke('privacy:disable'),
-
-  /** 清除 Cookies 和存储数据 */
   clearSessionData: () =>
     ipcRenderer.invoke('privacy:clear-data'),
+
+  // ==================== Profile 管理（v1.2 新增） ====================
+
+  listProfiles: () =>
+    ipcRenderer.invoke('profile:list'),
+  getActiveProfile: () =>
+    ipcRenderer.invoke('profile:get-active'),
+  setActiveProfile: (profileId: string) =>
+    ipcRenderer.invoke('profile:set-active', profileId),
+  getProfileTemplate: () =>
+    ipcRenderer.invoke('profile:get-template'),
+  createProfile: (profileData: unknown) =>
+    ipcRenderer.invoke('profile:create', profileData),
+  updateProfile: (id: string, updates: unknown) =>
+    ipcRenderer.invoke('profile:update', id, updates),
+  deleteProfile: (id: string) =>
+    ipcRenderer.invoke('profile:delete', id),
 
   // ==================== 事件监听 ====================
 
@@ -93,7 +108,6 @@ contextBridge.exposeInMainWorld('watrApi', {
     })
   },
 
-  /** 【v1.1 新增】步骤列表整体更新（删除/排序/插入后触发） */
   onStepsUpdated: (callback: (steps: unknown[]) => void) => {
     ipcRenderer.on('recording:steps-updated', (_event, steps) => {
       callback(steps)

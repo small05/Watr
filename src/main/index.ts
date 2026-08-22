@@ -1,13 +1,33 @@
 /**
  * Watr - Web Action Trajectory Recorder
  * 主进程入口：初始化窗口、反指纹、IPC 通道
+ *
+ * 【v1.2】
+ * - 便携化：所有数据存储在程序本体目录中
+ * - Profile 管理器初始化
  */
 
 import { app, session } from 'electron'
+import * as path from 'path'
 import { WindowManager } from './window-manager'
 import { setupAntiFingerprint } from './anti-fingerprint'
 import { registerIpcHandlers } from './ipc-handlers'
 import { RecordingEngine } from './recording-engine'
+import { ProfileManager } from './profile-manager'
+
+// ---- 便携化：所有数据存储在程序本体目录中 ----
+const isPackaged = app.isPackaged
+const portableRoot = isPackaged
+  ? path.dirname(app.getPath('exe'))
+  : path.resolve(__dirname, '../..')  // 开发环境：项目根目录
+
+const userDataDir = path.join(portableRoot, 'userdata')
+app.setPath('userData', userDataDir)
+
+// 导出供其他模块使用
+export function getPortableRoot(): string {
+  return portableRoot
+}
 
 // 单实例锁定 - 防止多开
 const gotTheLock = app.requestSingleInstanceLock()
@@ -25,21 +45,26 @@ app.commandLine.appendSwitch('disable-features', 'AutomationControlled')
 
 let windowManager: WindowManager
 let recordingEngine: RecordingEngine
+let profileManager: ProfileManager
 
 app.whenReady().then(async () => {
+  // ---- 初始化 Profile 管理器 ----
+  profileManager = new ProfileManager(portableRoot)
+  await profileManager.init()
+
   // ---- 反指纹：Session 层标头拦截 ----
   const defaultSession = session.fromPartition('persist:recorder_session')
   setupAntiFingerprint(defaultSession)
 
-  // ---- 初始化录制引擎 ----
-  recordingEngine = new RecordingEngine()
+  // ---- 初始化录制引擎（便携化录制目录） ----
+  recordingEngine = new RecordingEngine(portableRoot)
 
   // ---- 创建主窗口 ----
-  windowManager = new WindowManager(defaultSession, recordingEngine)
+  windowManager = new WindowManager(defaultSession, recordingEngine, profileManager)
   await windowManager.createWindow()
 
   // ---- 注册 IPC 通信通道 ----
-  registerIpcHandlers(windowManager, recordingEngine)
+  registerIpcHandlers(windowManager, recordingEngine, profileManager)
 })
 
 // macOS 激活窗口
